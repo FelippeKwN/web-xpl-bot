@@ -30,7 +30,7 @@ Telegram (`bot.py`), o que permite testar cada função isoladamente via
 
 - Python 3.10+
 - [Nmap](https://nmap.org/download.html) instalado e no PATH (necessário só para `/nmap`)
-- Opcional: [gau](https://github.com/lc/gau) instalado e no PATH (se ausente, `/gau` usa automaticamente a API da Wayback Machine como fallback)
+- Opcional: [gau](https://github.com/lc/gau) instalado e no PATH (se ausente, `/gau` usa automaticamente AlienVault OTX e, em seguida, a Wayback Machine como fallback)
 - Um token de bot do Telegram, criado com o [@BotFather](https://t.me/BotFather) (`/newbot`)
 
 ### 2. Instalação
@@ -65,7 +65,7 @@ foi adicionado.
 |---|---|---|
 | `/start` ou `/help` | Lista os comandos disponíveis | `/start` |
 | `/nmap <host>` | Scan básico das 100 portas mais comuns + detecção de versão | `/nmap scanme.nmap.org` |
-| `/gau <domínio>` | Coleta passiva de URLs já indexadas (gau ou fallback Wayback Machine) | `/gau example.com` |
+| `/gau <domínio>` | Coleta passiva de URLs já indexadas (gau, ou fallback via OTX/Wayback Machine) | `/gau example.com` |
 | `/crt <domínio>` | Lista subdomínios encontrados em certificados via crt.sh | `/crt example.com` |
 | `/ipinfo <ip>` | Geolocalização, ASN/organização e timezone do IP via ipinfo.io | `/ipinfo 8.8.8.8` |
 | `/dns <domínio>` *(bônus)* | Registros A/AAAA/MX/NS/TXT | `/dns example.com` |
