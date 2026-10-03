@@ -1,32 +1,51 @@
-"""
-Funções de reconhecimento ativo e passivo usadas pelos comandos do bot.
+# funcoes de reconhecimento usadas pelos comandos do bot (nmap, ipinfo, crt.sh, gau, dns)
+# cada uma recebe o alvo ja validado e devolve uma string pra mandar no chat
+# se der erro "esperado" (timeout, host invalido, api fora etc) levanta ReconError
 
-Cada função recebe um alvo já validado (ver validators.py) e devolve uma
-string formatada pronta para ser enviada no chat. Erros esperados (timeout,
-host inacessível, domínio sem resultados, etc.) são sinalizados com
-ReconError, que o bot.py captura e converte em mensagem de erro amigável.
-"""
+import ipaddress
+import re
 import shutil
 import socket
 import subprocess
 
 import requests
 
-REQUEST_TIMEOUT = 15  # segundos, para chamadas HTTP a serviços externos
-NMAP_TIMEOUT = 90      # segundos, scan é mais lento que uma consulta HTTP
+REQUEST_TIMEOUT = 15  # segundos pra chamadas http
+NMAP_TIMEOUT = 90  # nmap demora mais que uma consulta http normal
+
+HOSTNAME_RE = re.compile(r"^(?!-)[A-Za-z0-9-]{1,63}(?<!-)(\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))*$")
 
 
 class ReconError(Exception):
-    """Erro esperado de negócio (host inválido, timeout, API fora, etc.)."""
+    pass
 
 
-def run_nmap(host: str) -> str:
-    """Scan básico de portas/serviços (top 100 portas, detecção de versão)."""
+def is_valid_ip(value):
+    try:
+        ipaddress.ip_address(value)
+        return True
+    except ValueError:
+        return False
+
+
+def is_valid_target(value):
+    # bloqueia espaco e caracteres de shell pra nao dar problema quando vira
+    # argumento de comando (ex no nmap) ou injecao de parametro
+    if not value:
+        return False
+    for ch in " |&;$`()<>\\'\"":
+        if ch in value:
+            return False
+    if is_valid_ip(value):
+        return True
+    if len(value) > 253 or value.startswith("-"):
+        return False
+    return bool(HOSTNAME_RE.match(value))
+
+
+def run_nmap(host):
     if shutil.which("nmap") is None:
-        raise ReconError(
-            "nmap não está instalado neste servidor. Instale o Nmap e garanta "
-            "que o binário está no PATH."
-        )
+        raise ReconError("nmap nao esta instalado / nao esta no PATH")
 
     try:
         result = subprocess.run(
@@ -36,188 +55,164 @@ def run_nmap(host: str) -> str:
             timeout=NMAP_TIMEOUT,
         )
     except subprocess.TimeoutExpired:
-        raise ReconError(f"Scan em '{host}' excedeu {NMAP_TIMEOUT}s e foi abortado.")
+        raise ReconError(f"scan em {host} demorou demais e foi cancelado")
 
     if result.returncode != 0:
-        raise ReconError(f"nmap falhou ao escanear '{host}':\n{result.stderr.strip()[:500]}")
+        raise ReconError(f"nmap deu erro: {result.stderr.strip()[:500]}")
 
-    return result.stdout.strip() or "Nenhuma porta aberta encontrada nas 100 mais comuns."
+    return result.stdout.strip() or "nenhuma porta aberta nas 100 mais comuns"
 
 
-def run_ipinfo(ip: str, token: str | None = None) -> str:
-    """Consulta geolocalização/ASN/organização de um IP via ipinfo.io."""
+def run_ipinfo(ip, token=None):
     url = f"https://ipinfo.io/{ip}/json"
     params = {"token": token} if token else {}
 
     try:
         resp = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
     except requests.RequestException as exc:
-        raise ReconError(f"Falha ao consultar ipinfo.io: {exc}")
+        raise ReconError(f"erro ao chamar ipinfo.io: {exc}")
 
     if resp.status_code == 404:
-        raise ReconError(f"IP '{ip}' não encontrado/inválido para o ipinfo.io.")
+        raise ReconError("ip nao encontrado no ipinfo.io")
     if not resp.ok:
-        raise ReconError(f"ipinfo.io retornou HTTP {resp.status_code}.")
+        raise ReconError(f"ipinfo.io respondeu HTTP {resp.status_code}")
 
     data = resp.json()
     campos = ["ip", "hostname", "city", "region", "country", "loc", "org", "postal", "timezone"]
-    linhas = [f"{campo}: {data.get(campo, '-')}" for campo in campos if campo in data]
-    return "\n".join(linhas) if linhas else "Sem dados retornados pelo ipinfo.io."
+    linhas = []
+    for campo in campos:
+        if campo in data:
+            linhas.append(f"{campo}: {data[campo]}")
+    return "\n".join(linhas) if linhas else "sem dados pra esse ip"
 
 
-def run_crt(domain: str) -> str:
-    """Consulta certificados emitidos para o domínio via crt.sh para achar subdomínios."""
+def run_crt(domain):
     url = "https://crt.sh/"
     params = {"q": f"%.{domain}", "output": "json"}
 
     try:
         resp = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
     except requests.RequestException as exc:
-        raise ReconError(f"Falha ao consultar crt.sh: {exc}")
+        raise ReconError(f"erro ao chamar crt.sh: {exc}")
 
     if not resp.ok:
-        raise ReconError(f"crt.sh retornou HTTP {resp.status_code} (pode estar sobrecarregado).")
+        raise ReconError(f"crt.sh respondeu HTTP {resp.status_code}")
 
     try:
         registros = resp.json()
     except ValueError:
-        raise ReconError("crt.sh não retornou JSON válido (tente novamente em alguns segundos).")
+        raise ReconError("crt.sh nao devolveu um json valido, tenta de novo")
 
+    # junta tudo num set pra nao repetir subdominio
     subdominios = set()
     for registro in registros:
-        for nome in registro.get("name_value", "").split("\n"):
-            nome = nome.strip().lstrip("*.")
+        nomes = registro.get("name_value", "").split("\n")
+        for nome in nomes:
+            nome = nome.strip()
+            if nome.startswith("*."):
+                nome = nome[2:]
             if nome:
                 subdominios.add(nome)
 
     if not subdominios:
-        raise ReconError(f"Nenhum certificado encontrado para '{domain}'.")
+        raise ReconError("nenhum certificado encontrado pra esse dominio")
 
-    listagem = "\n".join(sorted(subdominios)[:50])
-    sufixo = "\n... (lista truncada em 50 itens)" if len(subdominios) > 50 else ""
-    return f"{len(subdominios)} subdomínio(s) encontrado(s):\n{listagem}{sufixo}"
-
-
-def _fallback_otx(domain: str) -> list[str]:
-    """Consulta o AlienVault OTX, uma das fontes passivas que o gau usa."""
-    url = f"https://otx.alienvault.com/api/v1/indicators/domain/{domain}/url_list"
-    try:
-        resp = requests.get(url, params={"limit": 500, "page": 1}, timeout=REQUEST_TIMEOUT)
-    except requests.RequestException as exc:
-        raise ReconError(f"OTX indisponível: {exc}")
-
-    if not resp.ok:
-        raise ReconError(f"OTX retornou HTTP {resp.status_code}")
-
-    try:
-        dados = resp.json()
-    except ValueError:
-        raise ReconError("Resposta inválida do OTX")
-
-    return [item["url"] for item in dados.get("url_list", []) if item.get("url")]
+    subdominios = sorted(subdominios)
+    listagem = "\n".join(subdominios[:50])
+    if len(subdominios) > 50:
+        listagem += f"\n... (+{len(subdominios) - 50} itens)"
+    return f"{len(subdominios)} subdominio(s) encontrado(s):\n{listagem}"
 
 
-def _fallback_wayback(domain: str) -> list[str]:
-    """Consulta a Wayback Machine (CDX API), a mesma fonte usada internamente pelo gau."""
-    url = "https://web.archive.org/cdx/search/cdx"
-    params = {
-        "url": f"*.{domain}/*",
-        "output": "json",
-        "fl": "original",
-        "collapse": "urlkey",
-        "limit": "500",
-    }
-    try:
-        resp = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
-    except requests.RequestException as exc:
-        raise ReconError(f"Wayback Machine indisponível: {exc}")
-
-    if not resp.ok:
-        raise ReconError(f"Wayback Machine retornou HTTP {resp.status_code}")
-
-    try:
-        linhas = resp.json()
-    except ValueError:
-        raise ReconError("Resposta inválida da Wayback Machine")
-
-    return [linha[0] for linha in linhas[1:]] if len(linhas) > 1 else []
-
-
-def run_gau(domain: str) -> str:
-    """Coleta passiva de URLs já indexadas para o domínio.
-
-    Usa o binário `gau` se estiver instalado; caso contrário tenta, em ordem,
-    o AlienVault OTX e a Wayback Machine (CDX) — as mesmas fontes públicas
-    usadas internamente pelo gau.
-    """
+def run_gau(domain):
+    # se tiver o binario gau instalado usa ele, senao tenta a api do OTX
+    # e por ultimo a wayback machine (a wayback vive meio travando entao
+    # deixei ela por ultimo)
     if shutil.which("gau") is not None:
         try:
-            result = subprocess.run(
-                ["gau", "--subs", domain],
-                capture_output=True,
-                text=True,
-                timeout=60,
-            )
+            result = subprocess.run(["gau", "--subs", domain], capture_output=True, text=True, timeout=60)
         except subprocess.TimeoutExpired:
-            raise ReconError("gau excedeu o tempo limite de 60s.")
-
+            raise ReconError("gau demorou mais de 60s")
         if result.returncode != 0:
-            raise ReconError(f"gau falhou: {result.stderr.strip()[:500]}")
-
+            raise ReconError(f"gau deu erro: {result.stderr.strip()[:500]}")
         urls = [u for u in result.stdout.splitlines() if u.strip()]
-    else:
-        # binário gau ausente: tenta duas fontes passivas públicas, na ordem
-        # (AlienVault OTX costuma responder bem mais rápido que a Wayback Machine)
-        erros = []
-        urls = []
+        return _formata_urls(urls)
+
+    # fonte 1: alienvault otx
+    urls = []
+    try:
+        r = requests.get(
+            f"https://otx.alienvault.com/api/v1/indicators/domain/{domain}/url_list",
+            params={"limit": 500, "page": 1},
+            timeout=REQUEST_TIMEOUT,
+        )
+        if r.ok:
+            dados = r.json()
+            urls = [item["url"] for item in dados.get("url_list", []) if item.get("url")]
+    except Exception:
+        pass  # tenta a proxima fonte
+
+    # fonte 2: wayback machine, só se a primeira nao trouxe nada
+    if not urls:
         try:
-            urls = _fallback_otx(domain)
-        except ReconError as exc:
-            erros.append(str(exc))
-
-        if not urls:
-            try:
-                urls = _fallback_wayback(domain)
-            except ReconError as exc:
-                erros.append(str(exc))
-
-        if not urls and erros:
-            raise ReconError(" | ".join(erros))
+            r = requests.get(
+                "https://web.archive.org/cdx/search/cdx",
+                params={
+                    "url": f"*.{domain}/*",
+                    "output": "json",
+                    "fl": "original",
+                    "collapse": "urlkey",
+                    "limit": "500",
+                },
+                timeout=REQUEST_TIMEOUT,
+            )
+            if r.ok:
+                linhas = r.json()
+                urls = [linha[0] for linha in linhas[1:]] if len(linhas) > 1 else []
+        except Exception:
+            pass
 
     if not urls:
-        raise ReconError(f"Nenhuma URL indexada encontrada para '{domain}'.")
+        raise ReconError("nao achei nenhuma url indexada (otx e wayback falharam/sem resultado)")
 
+    return _formata_urls(urls)
+
+
+def _formata_urls(urls):
+    if not urls:
+        raise ReconError("nenhuma url encontrada")
     listagem = "\n".join(urls[:50])
-    sufixo = f"\n... (+{len(urls) - 50} URLs, lista truncada)" if len(urls) > 50 else ""
-    return f"{len(urls)} URL(s) encontrada(s):\n{listagem}{sufixo}"
+    if len(urls) > 50:
+        listagem += f"\n... (+{len(urls) - 50} urls)"
+    return f"{len(urls)} url(s) encontrada(s):\n{listagem}"
 
 
-def run_dns(domain: str) -> str:
-    """[Bônus] Resolve registros A/AAAA/MX/NS/TXT de um domínio."""
+def run_dns(domain):
     linhas = []
 
-    for familia, nome in ((socket.AF_INET, "A"), (socket.AF_INET6, "AAAA")):
+    for familia, nome in [(socket.AF_INET, "A"), (socket.AF_INET6, "AAAA")]:
         try:
-            enderecos = {info[4][0] for info in socket.getaddrinfo(domain, None, familia)}
+            enderecos = set()
+            for info in socket.getaddrinfo(domain, None, familia):
+                enderecos.add(info[4][0])
             if enderecos:
-                linhas.append(f"{nome}: {', '.join(sorted(enderecos))}")
+                linhas.append(nome + ": " + ", ".join(sorted(enderecos)))
         except socket.gaierror:
             pass
 
     try:
-        import dns.resolver  # dnspython
-
+        import dns.resolver
         for tipo in ("MX", "NS", "TXT"):
             try:
                 respostas = dns.resolver.resolve(domain, tipo)
                 valores = ", ".join(str(r).strip() for r in respostas)
                 linhas.append(f"{tipo}: {valores}")
             except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN):
-                continue
+                pass
     except ImportError:
-        linhas.append("(instale 'dnspython' para registros MX/NS/TXT)")
+        linhas.append("(instala o dnspython pra pegar MX/NS/TXT tambem)")
 
     if not linhas:
-        raise ReconError(f"Não foi possível resolver nenhum registro DNS para '{domain}'.")
+        raise ReconError("nao consegui resolver nenhum registro dns pra esse dominio")
 
     return "\n".join(linhas)

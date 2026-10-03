@@ -11,18 +11,17 @@ pentests web (atividade acadêmica de Segurança de APIs).
 
 ```
 telegram-bot/
-├── bot.py           # entrypoint: handlers do Telegram, validação de args, formatação de saída
-├── recon.py         # lógica de reconhecimento (nmap, gau, crt.sh, ipinfo, dns) e erros
-├── ctf.py           # comando bônus: resolve o lab de SQLi do PortSwigger Web Academy
-├── validators.py    # validação de host/IP/domínio (evita injeção de comando e abuso)
+├── bot.py           # handlers do telegram, um por comando
+├── recon.py         # as funcoes que fazem o trabalho (nmap, gau, crt.sh, ipinfo, dns) + validacao
+├── ctf.py           # comando bonus que resolve o lab de sqli do portswigger
 ├── requirements.txt
 ├── .env.example
 └── README.md
 ```
 
-A lógica de reconhecimento (`recon.py`, `ctf.py`) é independente da camada do
-Telegram (`bot.py`), o que permite testar cada função isoladamente via
-`python -c "from recon import run_ipinfo; print(run_ipinfo('8.8.8.8'))"`.
+As funções de reconhecimento ficam separadas do `bot.py` pra dar pra testar
+sem precisar rodar o bot, tipo:
+`python -c "from recon import run_ipinfo; print(run_ipinfo('8.8.8.8'))"`
 
 ## Como rodar localmente
 
@@ -101,7 +100,7 @@ org: AS15169 Google LLC
 ## Tratamento de erros
 
 - **Entrada inválida** (host/domínio/IP malformado ou contendo caracteres de
-  shell): o bot rejeita antes de executar qualquer comando (`validators.py`).
+  shell): o bot rejeita antes de executar qualquer comando (função `is_valid_target` em `recon.py`).
 - **Host inacessível / timeout**: cada chamada externa (nmap, HTTP) tem
   timeout definido; o bot responde com `❌ <motivo>` em vez de travar.
 - **Erros inesperados**: capturados por um `error_handler` global do
