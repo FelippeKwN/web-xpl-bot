@@ -98,11 +98,57 @@ def run_crt(domain: str) -> str:
     return f"{len(subdominios)} subdomínio(s) encontrado(s):\n{listagem}{sufixo}"
 
 
+def _fallback_otx(domain: str) -> list[str]:
+    """Consulta o AlienVault OTX, uma das fontes passivas que o gau usa."""
+    url = f"https://otx.alienvault.com/api/v1/indicators/domain/{domain}/url_list"
+    try:
+        resp = requests.get(url, params={"limit": 500, "page": 1}, timeout=REQUEST_TIMEOUT)
+    except requests.RequestException as exc:
+        raise ReconError(f"OTX indisponível: {exc}")
+
+    if not resp.ok:
+        raise ReconError(f"OTX retornou HTTP {resp.status_code}")
+
+    try:
+        dados = resp.json()
+    except ValueError:
+        raise ReconError("Resposta inválida do OTX")
+
+    return [item["url"] for item in dados.get("url_list", []) if item.get("url")]
+
+
+def _fallback_wayback(domain: str) -> list[str]:
+    """Consulta a Wayback Machine (CDX API), a mesma fonte usada internamente pelo gau."""
+    url = "https://web.archive.org/cdx/search/cdx"
+    params = {
+        "url": f"*.{domain}/*",
+        "output": "json",
+        "fl": "original",
+        "collapse": "urlkey",
+        "limit": "500",
+    }
+    try:
+        resp = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
+    except requests.RequestException as exc:
+        raise ReconError(f"Wayback Machine indisponível: {exc}")
+
+    if not resp.ok:
+        raise ReconError(f"Wayback Machine retornou HTTP {resp.status_code}")
+
+    try:
+        linhas = resp.json()
+    except ValueError:
+        raise ReconError("Resposta inválida da Wayback Machine")
+
+    return [linha[0] for linha in linhas[1:]] if len(linhas) > 1 else []
+
+
 def run_gau(domain: str) -> str:
     """Coleta passiva de URLs já indexadas para o domínio.
 
-    Usa o binário `gau` se estiver instalado; caso contrário recorre à API
-    pública do Wayback Machine (CDX), a mesma fonte usada internamente pelo gau.
+    Usa o binário `gau` se estiver instalado; caso contrário tenta, em ordem,
+    o AlienVault OTX e a Wayback Machine (CDX) — as mesmas fontes públicas
+    usadas internamente pelo gau.
     """
     if shutil.which("gau") is not None:
         try:
@@ -120,28 +166,23 @@ def run_gau(domain: str) -> str:
 
         urls = [u for u in result.stdout.splitlines() if u.strip()]
     else:
-        url = "https://web.archive.org/cdx/search/cdx"
-        params = {
-            "url": f"*.{domain}/*",
-            "output": "json",
-            "fl": "original",
-            "collapse": "urlkey",
-            "limit": "500",
-        }
+        # binário gau ausente: tenta duas fontes passivas públicas, na ordem
+        # (AlienVault OTX costuma responder bem mais rápido que a Wayback Machine)
+        erros = []
+        urls = []
         try:
-            resp = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
-        except requests.RequestException as exc:
-            raise ReconError(f"Falha ao consultar Wayback Machine (fallback do gau): {exc}")
+            urls = _fallback_otx(domain)
+        except ReconError as exc:
+            erros.append(str(exc))
 
-        if not resp.ok:
-            raise ReconError(f"Wayback Machine retornou HTTP {resp.status_code}.")
+        if not urls:
+            try:
+                urls = _fallback_wayback(domain)
+            except ReconError as exc:
+                erros.append(str(exc))
 
-        try:
-            linhas = resp.json()
-        except ValueError:
-            raise ReconError("Resposta inválida da Wayback Machine.")
-
-        urls = [linha[0] for linha in linhas[1:]] if len(linhas) > 1 else []
+        if not urls and erros:
+            raise ReconError(" | ".join(erros))
 
     if not urls:
         raise ReconError(f"Nenhuma URL indexada encontrada para '{domain}'.")
