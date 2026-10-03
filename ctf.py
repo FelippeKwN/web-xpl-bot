@@ -27,8 +27,8 @@ def solve_sqli_lab(base_url: str) -> str:
     if not exploit.ok:
         raise ReconError(f"Lab retornou HTTP {exploit.status_code} para o payload.")
 
-    produtos_antes = baseline.text.count("product-tile")
-    produtos_depois = exploit.text.count("product-tile")
+    produtos_antes = baseline.text.count("<h3>")
+    produtos_depois = exploit.text.count("<h3>")
 
     if produtos_depois > produtos_antes:
         return (
